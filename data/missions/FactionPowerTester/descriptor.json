@@ -1,0 +1,9 @@
+{
+  "title": "Faction Powerlevel Simulator",
+  "background": "graphics/backgrounds/background4.jpg",
+  "icon": "codex_update.png",
+  "description": "An automated 200 DP vs 200 DP multi-round simulator. The results are logged in your 'saves/common/' folder.",
+  "difficulty": "MEDIUM",
+  "fleet":[],
+  "enemy":[]
+}
