@@ -15,7 +15,10 @@ import com.fs.starfarer.api.impl.campaign.fleets.DefaultFleetInflaterParams
 import com.fs.starfarer.api.impl.campaign.fleets.FleetFactoryV3
 import com.fs.starfarer.api.impl.campaign.fleets.FleetParamsV3
 import com.fs.starfarer.api.impl.campaign.ids.FleetTypes
+import com.fs.starfarer.api.impl.campaign.ids.Personalities
+import com.fs.starfarer.api.impl.campaign.ids.Ranks
 import com.fs.starfarer.api.impl.campaign.ids.ShipRoles
+import com.fs.starfarer.api.impl.campaign.ids.Stats
 import com.fs.starfarer.api.util.Misc
 import com.fs.starfarer.api.util.WeightedRandomPicker
 import org.lwjgl.util.vector.Vector2f
@@ -290,7 +293,7 @@ class FactionTesterRefereePlugin : BaseEveryFrameCombatPlugin() {
 
         val fpParams = FleetParamsV3(null, factionId, 1f, FleetTypes.PATROL_LARGE, targetDP, 0f, 0f, 0f, 0f, 0f, 0f)
         fpParams.withOfficers = true
-        FleetFactoryV3.addCommanderAndOfficersV2(fleet, fpParams, random)
+        addStandardizedOfficers(fleet, fpParams, random)
 
         val inflaterParams = DefaultFleetInflaterParams()
         inflaterParams.quality = 1f
@@ -308,6 +311,143 @@ class FactionTesterRefereePlugin : BaseEveryFrameCombatPlugin() {
 
         fleet.fleetData.sort()
         return fleet
+    }
+
+    private fun addStandardizedOfficers(fleet: CampaignFleetAPI, params: FleetParamsV3, random: java.util.Random) {
+        val members = fleet.fleetData.membersListCopy
+        if (members.isEmpty()) return
+
+        var combatPoints = 0f
+        var combatShips = 0f
+        for (member in members) {
+            if (member.isCivilian) continue
+            if (member.isFighterWing) continue
+            combatPoints += member.fleetPointCost.toFloat()
+            combatShips += 1f
+        }
+        if (combatPoints < 1f) combatPoints = 1f
+        if (combatShips < 1f) combatShips = 1f
+
+        val maxCommanderLevel = Global.getSettings().getInt("maxAIFleetCommanderLevel")
+        val mercMult = Global.getSettings().getFloat("officerAIMaxMercsMult")
+        var maxOfficers = Global.getSettings().getInt("officerAIMax")
+        val baseMaxOfficerLevel = Global.getSettings().getInt("officerMaxLevel")
+        val plugin = Global.getSettings().getPlugin("officerLevelUp") as com.fs.starfarer.api.plugins.OfficerLevelupPlugin
+
+        // --- THE FIX: Hardcode Officer Quality to 3 (Average) ---
+        // Bypasses (doctrine.getOfficerQuality() - 1f) / 4f
+        val fixedOfficerQuality = 3f
+        var officerQualityMult = (fixedOfficerQuality - 1f) / 4f
+        if (officerQualityMult > 1f) officerQualityMult = 1f
+
+        val baseShipsForMaxOfficerLevel = Global.getSettings().getFloat("baseCombatShipsForMaxOfficerLevel")
+        val baseCombatShipsPerOfficer = Global.getSettings().getFloat("baseCombatShipsPerOfficer")
+        val combatShipsPerOfficer = baseCombatShipsPerOfficer * (1f - officerQualityMult * 0.5f)
+
+        var fleetSizeOfficerQualityMult = combatShips / (baseShipsForMaxOfficerLevel * (1f - officerQualityMult * 0.5f))
+        if (fleetSizeOfficerQualityMult > 1f) fleetSizeOfficerQualityMult = 1f
+
+        maxOfficers += (fixedOfficerQuality * mercMult).toInt() + params.officerNumberBonus
+
+        var numOfficers = kotlin.math.min(maxOfficers, (combatShips / combatShipsPerOfficer).toInt())
+        numOfficers += params.officerNumberBonus
+        numOfficers = kotlin.math.round(numOfficers * params.officerNumberMult).toInt()
+
+        if (numOfficers > maxOfficers) numOfficers = maxOfficers
+
+        var maxOfficerLevel = kotlin.math.round((fixedOfficerQuality / 2f) + (fleetSizeOfficerQualityMult * 1f) * baseMaxOfficerLevel.toFloat()).toInt()
+        if (maxOfficerLevel < 1) maxOfficerLevel = 1
+        maxOfficerLevel += params.officerLevelBonus
+        if (maxOfficerLevel < 1) maxOfficerLevel = 1
+
+        val picker = WeightedRandomPicker<com.fs.starfarer.api.fleet.FleetMemberAPI>(random)
+        val flagshipPicker = WeightedRandomPicker<com.fs.starfarer.api.fleet.FleetMemberAPI>(random)
+
+        var maxSize = 0
+        for (member in members) {
+            if (member.isFighterWing) continue
+            if (member.isFlagship) continue
+            if (member.isCivilian) continue
+            if (!member.captain.isDefault) continue
+            val size = member.hullSpec.hullSize.ordinal
+            if (size > maxSize) {
+                maxSize = size
+            }
+        }
+
+        for (member in members) {
+            if (member.isFighterWing) continue
+            if (member.isFlagship) continue
+            if (member.isCivilian) continue
+            if (!member.captain.isDefault) continue
+
+            val weight = member.fleetPointCost.toFloat()
+            val size = member.hullSpec.hullSize.ordinal
+            if (size >= maxSize) {
+                flagshipPicker.add(member, weight)
+            }
+            picker.add(member, weight)
+        }
+
+        if (picker.isEmpty) picker.add(members[0], 1f)
+        if (flagshipPicker.isEmpty) flagshipPicker.add(members[0], 1f)
+
+        val flagship = flagshipPicker.pickAndRemove()
+        picker.remove(flagship)
+
+        var commanderLevel = maxOfficerLevel
+        var commanderLevelLimit = maxCommanderLevel
+        if (params.commanderLevelLimit != 0) {
+            commanderLevelLimit = params.commanderLevelLimit
+        }
+        if (commanderLevel > commanderLevelLimit) commanderLevel = commanderLevelLimit
+
+        var pref = FleetFactoryV3.getSkillPrefForShip(flagship)
+        var commander = params.commander
+        if (commander == null) {
+            commander = com.fs.starfarer.api.impl.campaign.events.OfficerManagerEvent.createOfficer(
+                fleet.faction, commanderLevel, pref, false, null, true, true, -1, random
+            )
+            if (commander.personalityAPI.id == Personalities.TIMID) {
+                commander.setPersonality(Personalities.CAUTIOUS)
+            }
+            FleetFactoryV3.addCommanderSkills(commander, fleet, params, random)
+        }
+        if (params.commander == null) {
+            commander.rankId = Ranks.SPACE_COMMANDER
+            commander.postId = Ranks.POST_FLEET_COMMANDER
+        }
+        fleet.commander = commander
+        fleet.fleetData.setFlagship(flagship)
+
+        val commanderOfficerLevelBonus = commander.stats.dynamic.getMod(Stats.OFFICER_MAX_LEVEL_MOD).computeEffective(0f).toInt()
+        var officerLevelLimit = plugin.getMaxLevel(null) + commanderOfficerLevelBonus
+        if (params.officerLevelLimit != 0) {
+            officerLevelLimit = params.officerLevelLimit
+        }
+
+        for (i in 0 until numOfficers) {
+            val member = picker.pickAndRemove() ?: break
+
+            var level = maxOfficerLevel - random.nextInt(3)
+            if (Misc.isEasy()) {
+                level = kotlin.math.ceil(level.toFloat() * Global.getSettings().getFloat("easyOfficerLevelMult")).toInt()
+            }
+            if (level < 1) level = 1
+            if (level > officerLevelLimit) level = officerLevelLimit
+
+            pref = FleetFactoryV3.getSkillPrefForShip(member)
+            val person = com.fs.starfarer.api.impl.campaign.events.OfficerManagerEvent.createOfficer(
+                fleet.faction, level, pref, false, fleet, true, true, -1, random
+            )
+
+            // Standardize personalities away from useless TIMID AI
+            if (person.personalityAPI.id == Personalities.TIMID) {
+                person.setPersonality(Personalities.CAUTIOUS)
+            }
+
+            member.captain = person
+        }
     }
 
     private fun getValidCombatants(owner: Int): List<ShipAPI> {
