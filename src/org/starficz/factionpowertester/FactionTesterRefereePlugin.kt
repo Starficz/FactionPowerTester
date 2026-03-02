@@ -22,6 +22,7 @@ import com.fs.starfarer.api.impl.campaign.ids.Stats
 import com.fs.starfarer.api.util.Misc
 import com.fs.starfarer.api.util.WeightedRandomPicker
 import org.lwjgl.util.vector.Vector2f
+import org.scy.hullmods.ScyEngineering.ScyAiV2
 import kotlin.math.max
 
 
@@ -30,7 +31,7 @@ class FactionTesterRefereePlugin : BaseEveryFrameCombatPlugin() {
     private lateinit var engine: CombatEngineAPI
 
     private val factionA = "hegemony"
-    private val factionB = "tritachyon"
+    private val factionB = "hegemony"
 
     // Balance Search Variables
     private val baselineDpA = 200f
@@ -203,6 +204,10 @@ class FactionTesterRefereePlugin : BaseEveryFrameCombatPlugin() {
                 0f,
                 captain
             )
+
+            // add custom ai to player side
+            if (spawnedShip.owner == 0 && !spawnedShip.hasListenerOfClass(ScyAiV2::class.java))
+                spawnedShip.addListener(ScyAiV2(spawnedShip))
 
             if (spawnedShip != null && spawnedShip.fleetMember != null) {
                 spawnedShip.fleetMember.shipName = member.shipName
